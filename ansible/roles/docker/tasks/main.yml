@@ -1,0 +1,70 @@
+---
+- name: Installer les prérequis
+  ansible.builtin.apt:
+    name: "{{ docker_prerequisites }}"
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Créer le dossier des clés APT
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    mode: "0755"
+
+- name: Télécharger la clé GPG de Docker
+  ansible.builtin.get_url:
+    url: https://download.docker.com/linux/ubuntu/gpg
+    dest: /etc/apt/keyrings/docker.asc
+    mode: "0644"
+
+- name: Ajouter le dépôt APT de Docker
+  ansible.builtin.apt_repository:
+    repo: >-
+      deb [arch={{ 'amd64' if ansible_architecture == 'x86_64' else 'arm64' }}
+      signed-by=/etc/apt/keyrings/docker.asc]
+      https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable
+    filename: docker
+    state: present
+    update_cache: true
+
+- name: Installer Docker
+  ansible.builtin.apt:
+    name: "{{ docker_packages }}"
+    state: present
+
+- name: Créer le dossier de configuration de Docker
+  ansible.builtin.file:
+    path: /etc/docker
+    state: directory
+    mode: "0755"
+
+- name: Configurer le démon Docker (MTU)
+  ansible.builtin.template:
+    src: daemon.json.j2
+    dest: /etc/docker/daemon.json
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Redémarrer Docker
+
+- name: Activer et démarrer Docker
+  ansible.builtin.systemd:
+    name: docker
+    enabled: true
+    state: started
+
+- name: Autoriser l'utilisateur à utiliser Docker sans sudo
+  ansible.builtin.user:
+    name: "{{ docker_user }}"
+    groups: docker
+    append: true
+
+- name: Vérifier la version de Docker
+  ansible.builtin.command: docker --version
+  register: docker_version
+  changed_when: false
+
+- name: Afficher la version
+  ansible.builtin.debug:
+    msg: "{{ docker_version.stdout }}"
