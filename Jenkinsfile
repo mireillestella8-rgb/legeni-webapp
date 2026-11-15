@@ -1,64 +1,136 @@
-// Pipeline de référence du TP 3.5 : tests -> build -> test d'acceptance -> push
+// Legeni WebApp - pipeline CI/CD (Lots 4 et 5)
 pipeline {
     agent any
 
     parameters {
-        string(name: 'DOCKERHUB_ID', defaultValue: 'legeni07', description: 'Votre identifiant Docker Hub')
-        booleanParam(name: 'PUSH', defaultValue: true, description: "Pousser l'image sur Docker Hub")
-    }
-
-    environment {
-        IMAGE          = "${params.DOCKERHUB_ID}/legeni-webapp"
-        VERSION        = "1.0.${env.BUILD_NUMBER}"
-        TEST_CONTAINER = "webapp-ci-${env.BUILD_NUMBER}"
-        CI_NETWORK     = "ci-net-${env.BUILD_NUMBER}"
+        booleanParam(name: 'RUN_TRIVY', defaultValue: true, description: 'Scanner l image avec Trivy')
     }
 
     options {
         timestamps()
-        timeout(time: 20, unit: 'MINUTES')
-        buildDiscarder(logRotator(numToKeepStr: '10'))
+        timeout(time: 45, unit: 'MINUTES')
+        buildDiscarder(logRotator(numToKeepStr: '15'))
+        disableConcurrentBuilds()
+    }
+
+    environment {
+        APP_NAME = 'legeni-webapp'
     }
 
     stages {
-        stage('Tests unitaires') {
+        stage('Preparation') {
             steps {
-                // L'étape "test" du Dockerfile lance flake8 + pytest : si un test échoue, le build s'arrête ici
-                sh 'docker build --target test -t legeni-webapp:test .'
+                script {
+                    env.APP_VERSION = readFile('VERSION').trim()
+                    env.IMAGE_TAG = "${env.APP_VERSION}-${env.BUILD_NUMBER}"
+                }
+                echo "Version ${env.APP_VERSION} - image ${env.APP_NAME}:${env.IMAGE_TAG} - branche ${env.BRANCH_NAME}"
+            }
+        }
+
+        stage('Controles qualite') {
+            parallel {
+                stage('Tests, flake8, couverture') {
+                    steps {
+                        sh '''
+                            rm -rf reports && mkdir -p reports
+                            docker build --target test -t ${APP_NAME}:test-${BUILD_NUMBER} .
+                            set +e
+                            docker run --name cov-${BUILD_NUMBER} ${APP_NAME}:test-${BUILD_NUMBER} \
+                                pytest --cov=app --cov-report=term --cov-report=xml:/app/coverage.xml \
+                                --cov-fail-under=80 --junitxml=/app/junit.xml -q
+                            rc=$?
+                            docker cp cov-${BUILD_NUMBER}:/app/junit.xml reports/junit.xml
+                            docker cp cov-${BUILD_NUMBER}:/app/coverage.xml reports/coverage.xml
+                            docker rm -f cov-${BUILD_NUMBER}
+                            exit $rc
+                        '''
+                    }
+                }
+                stage('hadolint') {
+                    steps {
+                        sh 'docker run --rm -i hadolint/hadolint:v2.12.0-alpine hadolint --failure-threshold error - < Dockerfile'
+                    }
+                }
+                stage('Syntaxe Ansible') {
+                    steps {
+                        withCredentials([file(credentialsId: 'ansible-vault-pass', variable: 'VAULT_FILE')]) {
+                            dir('ansible') {
+                                sh '''
+                                    ansible-playbook provision.yml --syntax-check --vault-password-file "$VAULT_FILE"
+                                    ansible-playbook deploy.yml --syntax-check -e target_env=staging --vault-password-file "$VAULT_FILE"
+                                '''
+                            }
+                        }
+                    }
+                }
             }
         }
 
         stage('Build image') {
             steps {
-                sh 'docker build --build-arg APP_VERSION=$VERSION -t $IMAGE:$VERSION -t $IMAGE:latest .'
+                sh 'docker build --build-arg APP_VERSION=$APP_VERSION -t ${APP_NAME}:${IMAGE_TAG} .'
             }
         }
 
-        stage("Test d'acceptance") {
+        stage('Scan Trivy') {
+            when { expression { params.RUN_TRIVY } }
             steps {
                 sh '''
-                    docker network create $CI_NETWORK
-                    docker run -d --name $TEST_CONTAINER --network $CI_NETWORK $IMAGE:$VERSION
-                    # On interroge le conteneur depuis un conteneur curl placé sur le même réseau
-                    docker run --rm --network $CI_NETWORK curlimages/curl:8.11.1 \
-                        -sf --retry 10 --retry-connrefused --retry-delay 1 http://$TEST_CONTAINER:5000/health
-                    docker run --rm --network $CI_NETWORK curlimages/curl:8.11.1 \
-                        -sf http://$TEST_CONTAINER:5000/ | grep -q "Version $VERSION"
+                    docker run --rm -v trivy-cache:/root/.cache/ \
+                        -v /var/run/docker.sock:/var/run/docker.sock \
+                        aquasec/trivy:0.58.1 image --exit-code 1 --severity CRITICAL \
+                        --ignore-unfixed --no-progress ${APP_NAME}:${IMAGE_TAG}
                 '''
             }
         }
 
-        stage('Push Docker Hub') {
-            when { expression { params.PUSH } }
+        stage('Push registre') {
+            when { branch 'main' }
             steps {
-                withCredentials([usernamePassword(credentialsId: 'dockerhub',
-                                                  usernameVariable: 'DH_USER',
-                                                  passwordVariable: 'DH_TOKEN')]) {
+                withCredentials([usernamePassword(credentialsId: 'registry-credentials',
+                                                  usernameVariable: 'REG_USER',
+                                                  passwordVariable: 'REG_PASS')]) {
                     sh '''
-                        echo "$DH_TOKEN" | docker login -u "$DH_USER" --password-stdin
-                        docker push $IMAGE:$VERSION
-                        docker push $IMAGE:latest
+                        echo "$REG_PASS" | docker login -u "$REG_USER" --password-stdin
+                        docker tag ${APP_NAME}:${IMAGE_TAG} "$REG_USER/${APP_NAME}:${IMAGE_TAG}"
+                        docker push "$REG_USER/${APP_NAME}:${IMAGE_TAG}"
+                        docker logout
                     '''
+                    script { env.IMAGE_REF = "${REG_USER}/${env.APP_NAME}:${env.IMAGE_TAG}" }
+                }
+            }
+        }
+
+        stage('Deploiement staging') {
+            when { branch 'main' }
+            steps {
+                withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG'),
+                                 file(credentialsId: 'ansible-vault-pass', variable: 'VAULT_FILE')]) {
+                    dir('ansible') {
+                        sh 'ansible-playbook deploy.yml -e target_env=staging -e app_image="$IMAGE_REF" -e app_version="$APP_VERSION" --vault-password-file "$VAULT_FILE"'
+                    }
+                }
+            }
+        }
+
+        stage('Validation production') {
+            when { branch 'main' }
+            steps {
+                timeout(time: 30, unit: 'MINUTES') {
+                    input message: "Staging valide (version ${env.APP_VERSION}). Deployer en production ?", ok: 'Deployer en production'
+                }
+            }
+        }
+
+        stage('Deploiement production') {
+            when { branch 'main' }
+            steps {
+                withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG'),
+                                 file(credentialsId: 'ansible-vault-pass', variable: 'VAULT_FILE')]) {
+                    dir('ansible') {
+                        sh 'ansible-playbook deploy.yml -e target_env=prod -e app_image="$IMAGE_REF" -e app_version="$APP_VERSION" --vault-password-file "$VAULT_FILE"'
+                    }
                 }
             }
         }
@@ -66,13 +138,31 @@ pipeline {
 
     post {
         always {
-            sh 'docker rm -f $TEST_CONTAINER || true; docker network rm $CI_NETWORK || true'
+            junit allowEmptyResults: true, testResults: 'reports/junit.xml'
+            archiveArtifacts artifacts: 'reports/*', allowEmptyArchive: true
+            script {
+                try {
+                    recordCoverage(tools: [[parser: 'COBERTURA', pattern: 'reports/coverage.xml']])
+                } catch (err) {
+                    echo "Rapport de couverture non publie : ${err.message}"
+                }
+            }
+            sh 'docker rm -f cov-${BUILD_NUMBER} || true; docker rmi -f ${APP_NAME}:test-${BUILD_NUMBER} || true'
         }
         success {
-            echo "Image ${IMAGE}:${VERSION} construite et validée"
+            echo "Pipeline termine : ${env.APP_NAME}:${env.IMAGE_TAG}"
         }
         failure {
-            echo "Échec du pipeline : consultez la console de l'étape en rouge"
+            script {
+                def msg = "Echec ${env.JOB_NAME} #${env.BUILD_NUMBER} - ${env.BUILD_URL}"
+                try {
+                    withCredentials([string(credentialsId: 'notify-webhook', variable: 'HOOK')]) {
+                        sh "curl -s -m 20 -X POST -H 'Content-Type: application/json' -d '{\"content\": \"${msg}\", \"text\": \"${msg}\"}' \"\$HOOK\""
+                    }
+                } catch (err) {
+                    echo "Notification non envoyee (credential notify-webhook absent ?) : ${msg}"
+                }
+            }
         }
     }
 }

@@ -39,8 +39,14 @@
           ansible.builtin.command: "kubectl rollout status deployment/legeni-webapp -n {{ k8s_namespace }} --timeout=180s"
           changed_when: false
 
-        - name: Obtenir l'adresse de Minikube
-          ansible.builtin.command: minikube ip
+        - name: Obtenir l'adresse du noeud Kubernetes
+          ansible.builtin.command:
+            argv:
+              - kubectl
+              - get
+              - nodes
+              - -o
+              - 'jsonpath={.items[0].status.addresses[?(@.type=="InternalIP")].address}'
           register: minikube_ip
           changed_when: false
 
