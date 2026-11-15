@@ -1,0 +1,74 @@
+---
+# Lot 3 - Déploiement de Legeni WebApp dans Kubernetes
+# Usage : ansible-playbook deploy.yml -e target_env=staging
+#   options : -e app_image=utilisateur/legeni-webapp:1.1.0-12  -e app_version=1.1.0
+- name: Déployer Legeni WebApp dans Kubernetes
+  hosts: legeni
+  gather_facts: false
+  vars_files:
+    - "vars/{{ target_env }}.yml"
+    - vars/vault.yml
+  vars:
+    app_version: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/../VERSION') | trim }}"
+    app_image: "legeni-webapp:{{ app_version }}-local"
+    app_image_pull_policy: IfNotPresent
+  tasks:
+    - name: Déploiement avec retour arrière automatique
+      block:
+        - name: Créer le namespace
+          kubernetes.core.k8s:
+            state: present
+            definition: "{{ lookup('ansible.builtin.template', 'k8s/namespace.yml.j2') }}"
+
+        - name: Déployer Redis (Secret, Service, StatefulSet)
+          kubernetes.core.k8s:
+            state: present
+            definition: "{{ lookup('ansible.builtin.template', 'k8s/redis.yml.j2') }}"
+          no_log: true
+
+        - name: Attendre que Redis soit prêt
+          ansible.builtin.command: "kubectl rollout status statefulset/redis -n {{ k8s_namespace }} --timeout=180s"
+          changed_when: false
+
+        - name: Déployer l'application (Deployment, Service)
+          kubernetes.core.k8s:
+            state: present
+            definition: "{{ lookup('ansible.builtin.template', 'k8s/app.yml.j2') }}"
+
+        - name: Attendre la fin du rolling update
+          ansible.builtin.command: "kubectl rollout status deployment/legeni-webapp -n {{ k8s_namespace }} --timeout=180s"
+          changed_when: false
+
+        - name: Obtenir l'adresse de Minikube
+          ansible.builtin.command: minikube ip
+          register: minikube_ip
+          changed_when: false
+
+        - name: "Smoke test : la version déployée est la bonne"
+          ansible.builtin.uri:
+            url: "http://{{ minikube_ip.stdout }}:{{ app_node_port }}/api/info"
+            return_content: true
+          register: smoke
+          until: smoke.status | default(0) == 200 and (smoke.json | default({})).get('version', '') == app_version
+          retries: 15
+          delay: 4
+          changed_when: false
+
+        - name: Afficher le résultat du déploiement
+          ansible.builtin.debug:
+            msg: "{{ target_env }} répond en version {{ smoke.json.version }} sur http://{{ minikube_ip.stdout }}:{{ app_node_port }}"
+
+      rescue:
+        - name: Annuler le déploiement (rollback)
+          ansible.builtin.command: "kubectl rollout undo deployment/legeni-webapp -n {{ k8s_namespace }}"
+          register: rollback
+          failed_when: false
+
+        - name: Attendre la fin du rollback
+          ansible.builtin.command: "kubectl rollout status deployment/legeni-webapp -n {{ k8s_namespace }} --timeout=120s"
+          when: rollback.rc == 0
+          failed_when: false
+
+        - name: Signaler l'échec du déploiement
+          ansible.builtin.fail:
+            msg: "Déploiement de {{ app_version }} échoué en {{ target_env }} : retour arrière effectué (code {{ rollback.rc }})."

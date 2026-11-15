@@ -1,0 +1,5 @@
+---
+k8s_namespace: legeni-prod
+app_replicas: 2
+app_color: "#1f6feb"
+app_node_port: 30080
