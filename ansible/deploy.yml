@@ -77,4 +77,4 @@
 
         - name: Signaler l'échec du déploiement
           ansible.builtin.fail:
-            msg: "Déploiement de {{ app_version }} échoué en {{ target_env }} : retour arrière effectué (code {{ rollback.rc }})."
+            msg: "Déploiement de {{ app_version }} échoué en {{ target_env }} : {{ 'retour arrière effectué, version précédente restaurée' if rollback.rc == 0 else 'aucune version précédente à restaurer (premier déploiement)' }}."

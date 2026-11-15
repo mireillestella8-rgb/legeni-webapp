@@ -41,25 +41,34 @@ spec:
                 secretKeyRef:
                   name: redis-secret
                   key: REDIS_PASSWORD
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 5000
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 36
           readinessProbe:
             httpGet:
               path: /ready
               port: 5000
-            initialDelaySeconds: 3
             periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
           livenessProbe:
             httpGet:
               path: /health
               port: 5000
-            initialDelaySeconds: 10
             periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
           resources:
             requests:
-              cpu: 50m
+              cpu: 100m
               memory: 64Mi
             limits:
-              cpu: 200m
-              memory: 128Mi
+              cpu: 500m
+              memory: 192Mi
 ---
 apiVersion: v1
 kind: Service
