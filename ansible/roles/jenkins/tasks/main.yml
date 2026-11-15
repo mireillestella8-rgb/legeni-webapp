@@ -1,0 +1,53 @@
+---
+- name: Créer le dossier de travail de Jenkins
+  ansible.builtin.file:
+    path: "{{ jenkins_dir }}"
+    state: directory
+    owner: "{{ jenkins_user }}"
+    group: "{{ jenkins_user }}"
+    mode: "0755"
+
+- name: Copier les fichiers de l'image Jenkins
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: "{{ jenkins_dir }}/{{ item }}"
+    owner: "{{ jenkins_user }}"
+    group: "{{ jenkins_user }}"
+    mode: "0644"
+  loop:
+    - Dockerfile
+    - plugins.txt
+    - docker-compose.yml
+
+- name: Lire le GID du groupe docker
+  ansible.builtin.getent:
+    database: group
+    key: docker
+
+- name: Écrire le fichier .env (DOCKER_GID)
+  ansible.builtin.copy:
+    content: "DOCKER_GID={{ getent_group['docker'][1] }}\n"
+    dest: "{{ jenkins_dir }}/.env"
+    owner: "{{ jenkins_user }}"
+    group: "{{ jenkins_user }}"
+    mode: "0644"
+
+- name: Construire et démarrer Jenkins
+  ansible.builtin.command:
+    cmd: docker compose up -d --build
+    chdir: "{{ jenkins_dir }}"
+  register: jenkins_up
+  changed_when: >-
+    'Created' in jenkins_up.stderr or
+    'Recreated' in jenkins_up.stderr or
+    'Started' in jenkins_up.stderr
+
+- name: Attendre que Jenkins réponde
+  ansible.builtin.uri:
+    url: "http://localhost:{{ jenkins_http_port }}/login"
+    status_code: [200, 403]
+  register: jenkins_http
+  until: jenkins_http.status in [200, 403]
+  retries: 60
+  delay: 10
+  changed_when: false

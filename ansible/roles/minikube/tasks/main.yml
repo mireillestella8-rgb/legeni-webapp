@@ -1,0 +1,68 @@
+---
+- name: Déterminer la dernière version stable de kubectl
+  ansible.builtin.uri:
+    url: https://dl.k8s.io/release/stable.txt
+    return_content: true
+  register: kubectl_stable
+  changed_when: false
+  retries: 5
+  delay: 10
+  until: kubectl_stable is succeeded
+
+- name: Installer kubectl
+  ansible.builtin.get_url:
+    url: "https://dl.k8s.io/release/{{ kubectl_stable.content | trim }}/bin/linux/amd64/kubectl"
+    dest: /usr/local/bin/kubectl
+    mode: "0755"
+  register: kubectl_dl
+  retries: 5
+  delay: 10
+  until: kubectl_dl is succeeded
+
+- name: Installer Minikube
+  ansible.builtin.get_url:
+    url: https://storage.googleapis.com/minikube/releases/latest/minikube-linux-amd64
+    dest: /usr/local/bin/minikube
+    mode: "0755"
+  register: minikube_dl
+  retries: 5
+  delay: 10
+  until: minikube_dl is succeeded
+
+# sg docker : utilise le groupe docker même si la session vient d'y être ajoutée
+- name: Lire l'état de Minikube
+  ansible.builtin.command:
+    argv:
+      - sg
+      - docker
+      - -c
+      - minikube status
+  become: false
+  register: minikube_status
+  changed_when: false
+  failed_when: false
+
+- name: Démarrer Minikube (driver docker)
+  ansible.builtin.command:
+    argv:
+      - sg
+      - docker
+      - -c
+      - "minikube start --driver=docker --cpus={{ minikube_cpus }} --memory={{ minikube_memory }} --addons={{ minikube_addons | join(',') }}"
+  become: false
+  when: "'host: Running' not in minikube_status.stdout"
+  register: minikube_start
+  retries: 3
+  delay: 30
+  until: minikube_start is succeeded
+  timeout: 7200
+
+- name: Vérifier le cluster Kubernetes
+  ansible.builtin.command: kubectl get nodes
+  become: false
+  register: minikube_nodes
+  changed_when: false
+
+- name: Afficher les nœuds
+  ansible.builtin.debug:
+    msg: "{{ minikube_nodes.stdout_lines }}"

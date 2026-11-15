@@ -1,7 +1,9 @@
 ---
-# Lot 2 - Provisionne la machine CI/CD (Docker ; Jenkins et Minikube suivront)
+# Lot 2 - Provisionne la machine CI/CD : Docker, Minikube (+ kubectl) et Jenkins
 - name: Provisionner la machine CI/CD
   hosts: legeni
   become: true
   roles:
     - docker
+    - minikube
+    - jenkins

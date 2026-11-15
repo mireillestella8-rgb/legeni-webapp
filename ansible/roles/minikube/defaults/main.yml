@@ -1,0 +1,6 @@
+---
+minikube_cpus: 2
+minikube_memory: 2200mb
+minikube_addons:
+  - metrics-server
+  - ingress

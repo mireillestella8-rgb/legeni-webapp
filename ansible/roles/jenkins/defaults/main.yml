@@ -1,0 +1,4 @@
+---
+jenkins_user: "{{ lookup('env', 'USER') }}"
+jenkins_dir: "{{ lookup('env', 'HOME') }}/jenkins"
+jenkins_http_port: 8080
