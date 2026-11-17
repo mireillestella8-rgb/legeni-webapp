@@ -57,8 +57,8 @@ pipeline {
                         withCredentials([file(credentialsId: 'ansible-vault-pass', variable: 'VAULT_FILE')]) {
                             dir('ansible') {
                                 sh '''
-                                    ansible-playbook provision.yml --syntax-check --vault-password-file "$VAULT_FILE"
-                                    ansible-playbook deploy.yml --syntax-check -e target_env=staging --vault-password-file "$VAULT_FILE"
+                                    ANSIBLE_VAULT_PASSWORD_FILE="$VAULT_FILE" ansible-playbook provision.yml --syntax-check
+                                    ANSIBLE_VAULT_PASSWORD_FILE="$VAULT_FILE" ansible-playbook deploy.yml --syntax-check -e target_env=staging
                                 '''
                             }
                         }
@@ -80,7 +80,7 @@ pipeline {
                     docker run --rm -v trivy-cache:/root/.cache/ \
                         -v /var/run/docker.sock:/var/run/docker.sock \
                         aquasec/trivy:0.58.1 image --exit-code 1 --severity CRITICAL \
-                        --ignore-unfixed --no-progress ${APP_NAME}:${IMAGE_TAG}
+                        --ignore-unfixed --skip-db-update --no-progress ${APP_NAME}:${IMAGE_TAG}
                 '''
             }
         }
@@ -108,7 +108,7 @@ pipeline {
                 withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG'),
                                  file(credentialsId: 'ansible-vault-pass', variable: 'VAULT_FILE')]) {
                     dir('ansible') {
-                        sh 'ansible-playbook deploy.yml -e target_env=staging -e app_image="$IMAGE_REF" -e app_version="$APP_VERSION" --vault-password-file "$VAULT_FILE"'
+                        sh 'ANSIBLE_VAULT_PASSWORD_FILE="$VAULT_FILE" ansible-playbook deploy.yml -e target_env=staging -e app_image="$IMAGE_REF" -e app_version="$APP_VERSION"'
                     }
                 }
             }
@@ -129,7 +129,7 @@ pipeline {
                 withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG'),
                                  file(credentialsId: 'ansible-vault-pass', variable: 'VAULT_FILE')]) {
                     dir('ansible') {
-                        sh 'ansible-playbook deploy.yml -e target_env=prod -e app_image="$IMAGE_REF" -e app_version="$APP_VERSION" --vault-password-file "$VAULT_FILE"'
+                        sh 'ANSIBLE_VAULT_PASSWORD_FILE="$VAULT_FILE" ansible-playbook deploy.yml -e target_env=prod -e app_image="$IMAGE_REF" -e app_version="$APP_VERSION"'
                     }
                 }
             }
